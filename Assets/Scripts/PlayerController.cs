@@ -1,5 +1,6 @@
 ﻿using UnityEngine;
 using System.Collections;
+using System.Collections.Generic;
 
 [RequireComponent(typeof(Controller2D))]
 public class PlayerController : MonoBehaviour
@@ -19,13 +20,22 @@ public class PlayerController : MonoBehaviour
     public float wallStickTime = 0.25f;
     float timeToWallUnstick;
     bool canTeleport = false;
-
-
-    Vector2 ray1Start, ray1End, ray2Start, ray2End;
-
-    int count = 0;
+    float teleportRange = 1.5f;
+    List<DrawRayInfo> rays = new List<DrawRayInfo>();
 
     public Vector2 wallJumpClimb, wallJumpOff, wallLeap;
+
+    public struct DrawRayInfo
+    {
+        public Vector2 rayStart, rayEnd;
+        public Vector4 color;
+        public DrawRayInfo(Vector2 start, Vector2 end, Vector4 c)
+        {
+            rayStart = start;
+            rayEnd = end;
+            color = c;
+        }
+    }
 
     // Use this for initialization
     void Start()
@@ -154,12 +164,16 @@ public class PlayerController : MonoBehaviour
         }
 
         // draw teleport rays for testing
-        Debug.DrawRay(ray1Start, ray1End - ray1Start, Color.red);
-        Debug.DrawRay(ray2Start, ray2End - ray2Start, Color.red);
+        foreach( DrawRayInfo ray in rays){
+            Debug.DrawRay(ray.rayStart, ray.rayEnd - ray.rayStart, ray.color);
+        }
     }
 
     void performTeleport()
     {
+        canTeleport = false;
+        rays.Clear();
+
         // get teleport angle
         Vector3 playerPos = Camera.main.WorldToScreenPoint(transform.position);
         Vector2 rayDirection = Vector3.Normalize(new Vector2(Input.mousePosition.x, Input.mousePosition.y) - new Vector2(playerPos.x, playerPos.y));
@@ -175,11 +189,8 @@ public class PlayerController : MonoBehaviour
             angle = 360.0f - angle;
         }
         angle = (450 - angle) % 360;
-        if ((angle > 90 && angle < 180) || (angle > 270 && angle < 360))
-        {
-            rayOrigin1 = controller.rayCastOrigins.topRight;
-            rayOrigin2 = controller.rayCastOrigins.bottomLeft;
-        }
+        rayOrigin1 = (Vector3.Dot(rayDirection, Vector3.right) > 0) ? controller.rayCastOrigins.topRight : controller.rayCastOrigins.topLeft;
+        rayOrigin2 = (Vector3.Dot(rayDirection, Vector3.up) > 0) ? controller.rayCastOrigins.topLeft : controller.rayCastOrigins.bottomLeft;
 
         // get the teleport distance
         float rayLength = 0.0f;
@@ -195,30 +206,78 @@ public class PlayerController : MonoBehaviour
         rayLength = Mathf.Abs(rayLength);
         //Debug.Log("ray length: " + rayLength);
 
-        // draw 2 rays and see if they hit any obstacles
-        RaycastHit2D hit = Physics2D.Raycast(rayOrigin1, rayDirection, rayLength * 1.5f, controller.collisionMask);
+        // draw initial teleport rays on outward facing sides
         bool wasHit = false;
-        if (hit)
+        Vector2 initialRay = rayDirection * teleportRange;
+        float yOffset = controller.collider.bounds.size.y / 3;
+        List<RaycastHit2D> collisionPoints = new List<RaycastHit2D>();
+        List<Vector2> originPositions = new List<Vector2>();
+        for (int i = 0; i < 4; ++i)
         {
-            Debug.Log("hit 1!");
-            ray1Start = rayOrigin1;
-            ray1End = rayOrigin1 + rayDirection * 1.5f;
-            wasHit = true;
+            Vector2 originPos = rayOrigin1 + (-Vector2.up * yOffset * i);
+            RaycastHit2D hit = Physics2D.Raycast(originPos, rayDirection, rayLength * teleportRange, controller.collisionMask);
+            rays.Add(new DrawRayInfo(originPos, originPos + initialRay, new Vector4(0,0,1,1)));
+            collisionPoints.Add(hit);
+            originPositions.Add(originPos);
+            wasHit = hit ? true : false;
         }
-        hit = Physics2D.Raycast(rayOrigin2, rayDirection, rayLength * 1.5f, controller.collisionMask);
-        if (hit)
+        float xOffset = controller.collider.bounds.size.x / 3;
+        for (int i = 0; i < 4; ++i)
         {
-            Debug.Log("hit 2!");
-            ray2Start = rayOrigin2;
-            ray2End = rayOrigin2 + rayDirection * 1.5f;
-            wasHit = true;
+            Vector2 originPos = rayOrigin2 + (Vector2.right * xOffset * i);
+            RaycastHit2D hit = Physics2D.Raycast(originPos, rayDirection, rayLength * teleportRange, controller.collisionMask);
+            rays.Add(new DrawRayInfo(originPos, originPos + initialRay, new Vector4(0,0,1,1)));
+            collisionPoints.Add(hit);
+            originPositions.Add(originPos);
+            wasHit = hit ? true : false;
+        }
+
+        // rays hit so need to do further checks
+        if (wasHit)
+        {
+            // loop through all the hits and find where they exit the collider
+            float maxDistThroughObstacle = 0.0f;
+            int i = 0;
+            foreach (RaycastHit2D rayHit in collisionPoints)
+            {
+                if (rayHit != null)
+                {
+                    if (rayHit.normal == Vector2.left)
+                    {
+                        // get the difference between the enter and exit positions
+                        float xDiff = rayHit.collider.bounds.size.x - rayHit.point.x;
+                        float yDiff = rayHit.collider.bounds.size.y - rayHit.point.y;
+                        float xPos, yPos, slope;
+                        if (xDiff >= yDiff)
+                        {
+                            xPos = rayHit.collider.bounds.max.x;
+                            slope = rayDirection.y / rayDirection.x;
+                            yPos = rayHit.point.y + (slope * (xPos - rayHit.point.x));
+                        }
+                        else
+                        {
+                            yPos = rayHit.collider.bounds.max.y;
+                            slope = rayDirection.x / rayDirection.y;
+                            xPos = rayHit.point.x + (slope * (yPos - rayHit.point.y));
+                        }
+                        Vector2 otherSide = new Vector2(xPos, yPos);
+                        if (Vector2.Distance(otherSide, originPositions[i]) > maxDistThroughObstacle)
+                        {   
+                            maxDistThroughObstacle = Vector2.Distance(otherSide, originPositions[i]);
+                        }
+                        rays.Add(new DrawRayInfo(rayHit.point, otherSide, new Vector4(1, 0, 0, 1)));
+                    }
+                }
+                i++;
+            }
+            Debug.Log(maxDistThroughObstacle);
         }
 
         // if no wall hit, teleport to new location
         if (!wasHit)
         {
             canTeleport = false;
-            transform.Translate(rayDirection.x * 1.5f, rayDirection.y * 1.5f, 0.0f);
+            //transform.Translate(rayDirection.x * teleportRange, rayDirection.y * teleportRange, 0.0f);
         }
     }
 
