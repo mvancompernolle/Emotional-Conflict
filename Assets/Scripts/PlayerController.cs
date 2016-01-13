@@ -23,8 +23,15 @@ public class PlayerController : MonoBehaviour
     float teleportRange = 1.5f;
     List<DrawRayInfo> rays = new List<DrawRayInfo>();
     bool isGreen = false, isBlue = false;
+    public RayCastOrigins teleportRayOrigins;
+    float teleportSkinWidth = 0.015f;
 
     public Vector2 wallJumpClimb, wallJumpOff, wallLeap;
+
+    public struct RayCastOrigins
+    {
+        public Vector2 topLeft, topRight, bottomLeft, bottomRight;
+    }
 
     public struct DrawRayInfo
     {
@@ -59,12 +66,6 @@ public class PlayerController : MonoBehaviour
         if (controller.collisions.below || controller.collisions.above || controller.collisions.left || controller.collisions.right)
         {
             canTeleport = true;
-        }
-        if (Input.GetMouseButtonDown(0) && canTeleport)
-        {
-            // attempt to teleport the player
-            Debug.Log("attempting teleport");
-            performTeleport();
         }
 
         // get player input
@@ -153,6 +154,14 @@ public class PlayerController : MonoBehaviour
                 velocity.y = minJumpVelocity;
         }
 
+        // attempt to teleport the player
+        if (Input.GetMouseButtonDown(0) && canTeleport)
+        {
+            // attempt to teleport the player
+            Debug.Log("attempting teleport");
+            performTeleport();
+        }
+
         // apply gravity to y velocity
         velocity.y += gravity * Time.deltaTime;
         // tell controller to move the player by current velocity
@@ -175,6 +184,7 @@ public class PlayerController : MonoBehaviour
     {
         float numRaysPerSide = 3;
         canTeleport = false;
+        bool nextToWall = false;
         rays.Clear();
 
         // get teleport angle
@@ -182,9 +192,11 @@ public class PlayerController : MonoBehaviour
         Vector2 rayDirection = Vector3.Normalize(new Vector2(Input.mousePosition.x, Input.mousePosition.y) - new Vector2(playerPos.x, playerPos.y));
         //Debug.Log("ray: " + rayDirection);
 
+        UpdatTeleportCastOrigins();
+
         // determine which two corners to cast rays from
-        Vector2 rayOrigin1 = controller.rayCastOrigins.topLeft;
-        Vector2 rayOrigin2 = controller.rayCastOrigins.bottomRight;
+        Vector2 rayOrigin1 = teleportRayOrigins.topLeft;
+        Vector2 rayOrigin2 = teleportRayOrigins.bottomRight;
         // dumb way to get unit circle angle
         float angle = Vector3.Angle(Vector3.up, rayDirection);
         if (rayDirection.x < 0.0f)
@@ -192,8 +204,8 @@ public class PlayerController : MonoBehaviour
             angle = 360.0f - angle;
         }
         angle = (450 - angle) % 360;
-        rayOrigin1 = (Vector3.Dot(rayDirection, Vector3.right) > 0) ? controller.rayCastOrigins.topRight : controller.rayCastOrigins.topLeft;
-        rayOrigin2 = (Vector3.Dot(rayDirection, Vector3.up) > 0) ? controller.rayCastOrigins.topLeft : controller.rayCastOrigins.bottomLeft;
+        rayOrigin1 = (Vector3.Dot(rayDirection, Vector3.right) > 0) ? teleportRayOrigins.topRight : teleportRayOrigins.topLeft;
+        rayOrigin2 = (Vector3.Dot(rayDirection, Vector3.up) > 0) ? teleportRayOrigins.topLeft : teleportRayOrigins.bottomLeft;
 
         // get the teleport distance
         float lengthOfChar = 0.0f;
@@ -213,8 +225,8 @@ public class PlayerController : MonoBehaviour
         float raySize = lengthOfChar * teleportRange;
         float distFromStart = raySize;
         float distToCurrentOrigin = 0.0f;
-        float yOffset = bounds.size.y / (numRaysPerSide-1);
-        float xOffset = bounds.size.x / (numRaysPerSide-1);
+        float yOffset = (teleportRayOrigins.topLeft.y - teleportRayOrigins.bottomLeft.y) / (numRaysPerSide-1);
+        float xOffset = (teleportRayOrigins.topRight.x - teleportRayOrigins.topLeft.x) / (numRaysPerSide-1);
         List<RaycastHit2D> collisionPoints = new List<RaycastHit2D>();
         List<Vector2> originPositions = new List<Vector2>();
 
@@ -229,22 +241,32 @@ public class PlayerController : MonoBehaviour
                 Vector2 originPos = rayOrigin1 + (rayDirection * distToCurrentOrigin) + (-Vector2.up * yOffset * i);
                 RaycastHit2D hit = Physics2D.Raycast(originPos, rayDirection, raySize, controller.collisionMask);
                 rays.Add(new DrawRayInfo(originPos, originPos + (rayDirection * raySize), isGreen ? new Vector4(0, 1, 0, 1) : new Vector4(1, 1, 0, 1)));
-                collisionPoints.Add(hit);
-                originPositions.Add(originPos);
-                wasHit = hit ? true : false;
+                if (hit)
+                {
+                    collisionPoints.Add(hit);
+                    originPositions.Add(originPos);
+                }
+                wasHit |= hit ? true : false;
             }
-            /*for (int i = 0; i < numRaysPerSide; ++i)
+            for (int i = 0; i < numRaysPerSide; ++i)
             {
                 Vector2 originPos = rayOrigin2 + (rayDirection * distToCurrentOrigin) + (Vector2.right * xOffset * i);
                 RaycastHit2D hit = Physics2D.Raycast(originPos, rayDirection, raySize, controller.collisionMask);
-                rays.Add(new DrawRayInfo(originPos, originPos + (rayDirection * raySize), new Vector4(0, 0, 1, 1)));
+                rays.Add(new DrawRayInfo(originPos, originPos + (rayDirection * raySize), isGreen ? new Vector4(0, 1, 0, 1) : new Vector4(1, 1, 0, 1)));
                 collisionPoints.Add(hit);
                 originPositions.Add(originPos);
-                wasHit = hit ? true : false;
-            }*/
+                wasHit |= hit ? true : false;
+            }
+
+            if(wasHit && loopNum == 0)
+            {
+                Debug.Log("was hit: " + wasHit);
+                nextToWall = true;
+            }
 
             // if there was a collision, get ray exit points on other side of object
             float maxDist = 0.0f;
+            //Debug.Log("collision num: " + collisionPoints.Count);
             for( int i = 0; i < collisionPoints.Count; ++i)
             {
                 RaycastHit2D rayHit = collisionPoints[i];
@@ -256,13 +278,13 @@ public class PlayerController : MonoBehaviour
                     {
                         maxDist = dist;
                     }
-                    Debug.Log("Intercept Point: " + otherSide);
+                    //Debug.Log("Intercept Point: " + otherSide);
                     rays.Add(new DrawRayInfo(rayHit.point, otherSide, isBlue ? new Vector4(.5f, .5f, 1, 1) : new Vector4(1, 0, 0, 1)));
                 }
             }
             distToCurrentOrigin += maxDist + 0.1f;
             raySize = lengthOfChar;
-            Debug.Log("dist to Origin: " + distToCurrentOrigin);
+            //Debug.Log("dist to Origin: " + distToCurrentOrigin);
 
             isBlue = !isBlue;
             isGreen = !isGreen;
@@ -270,10 +292,13 @@ public class PlayerController : MonoBehaviour
         }
 
         // if no wall hit, teleport to new location
-        if (!wasHit)
+        if (collisionPoints.Count > 0)
         {
             canTeleport = false;
-            //transform.Translate(rayDirection.x * teleportRange, rayDirection.y * teleportRange, 0.0f);
+            if (nextToWall) {
+                //velocity += new Vector3(moveSpeed * rayDirection.x, moveSpeed * rayDirection.y, 0.0f);
+                transform.position = transform.position + new Vector3(rayDirection.x * (distToCurrentOrigin + lengthOfChar), rayDirection.y * (distToCurrentOrigin + lengthOfChar), 0.0f);
+            }
         }
     }
 
@@ -376,50 +401,20 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    public void UpdatTeleportCastOrigins()
+    {
+        Bounds bounds = controller.collider.bounds;
+        bounds.Expand(-teleportSkinWidth * 2);
+
+        teleportRayOrigins.bottomLeft = new Vector2(bounds.min.x, bounds.min.y);
+        teleportRayOrigins.bottomRight = new Vector2(bounds.max.x, bounds.min.y);
+        teleportRayOrigins.topLeft = new Vector2(bounds.min.x, bounds.max.y);
+        teleportRayOrigins.topRight = new Vector2(bounds.max.x, bounds.max.y);
+    }
+
     void teleportThroughWall(Vector2 rayDirection, float rayLength, RaycastHit2D hit)
     {
 
 
     }
 }
-
-//        // rays hit so need to do further checks
-//        if (wasHit)
-//        {
-//            // loop through all the hits and find where they exit the collider
-//            float maxDistThroughObstacle = 0.0f;
-//int i = 0;
-//            foreach (RaycastHit2D rayHit in collisionPoints)
-//            {
-//                if (rayHit != null)
-//                {
-//                    if (rayHit.normal == Vector2.left)
-//                    {
-//                        // get the difference between the enter and exit positions
-//                        float xDiff = rayHit.collider.bounds.size.x - rayHit.point.x;
-//float yDiff = rayHit.collider.bounds.size.y - rayHit.point.y;
-//float xPos, yPos, slope;
-//                        if (xDiff >= yDiff)
-//                        {
-//                            xPos = rayHit.collider.bounds.max.x;
-//                            slope = rayDirection.y / rayDirection.x;
-//                            yPos = rayHit.point.y + (slope* (xPos - rayHit.point.x));
-//                        }
-//                        else
-//                        {
-//                            yPos = rayHit.collider.bounds.max.y;
-//                            slope = rayDirection.x / rayDirection.y;
-//                            xPos = rayHit.point.x + (slope* (yPos - rayHit.point.y));
-//                        }
-//                        Vector2 otherSide = new Vector2(xPos, yPos);
-//                        if (Vector2.Distance(otherSide, originPositions[i]) > maxDistThroughObstacle)
-//                        {
-//                            maxDistThroughObstacle = Vector2.Distance(otherSide, originPositions[i]);
-//                        }
-//                        rays.Add(new DrawRayInfo(rayHit.point, otherSide, new Vector4(1, 0, 0, 1)));
-//                    }
-//                }
-//                i++;
-//            }
-//            Debug.Log(maxDistThroughObstacle);
-//        }
